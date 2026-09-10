@@ -1,0 +1,59 @@
+[project]
+name = "xnft-example"
+dynamic = ["version"]
+authors = [
+  { name = "LEmmA Group, Michigan State University" },
+  { name = "Jason Merlo", email = "merlojas@msu.edu" },
+  { name = "Mauro Ettorre", email = "ettorre@msu.edu" },
+]
+maintainers = [{ name = "Jason Merlo", email = "merlojas@msu.edu" }]
+readme = "README.md"
+description = "Antenna measurement and analysis software."
+license = "LicenseRef-Proprietary"
+
+requires-python = ">=3.13,<3.15"
+
+[project.scripts]
+xnft = "xnft.gui.app:main"
+
+[project.urls]
+
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
+tag_regex = "^v(?P<version>.*)$"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+xnft = ["*.yaml", "*.svg", "*.png", "*.icns", "*.ico"]
+
+# === PyTest Configuration ===
+
+[tool.pytest.ini_options]
+addopts = "--cov='xnft' --cov-report term --cov-report xml:coverage.xml --junitxml report.xml -n auto"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["**/.pixi/**", "**/tests/**"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+# Exclude CI pixi cache folder.
+extend-exclude = [".pixi-cache"]
+
+
+# === xNFT Plugin Configuration ===
+[project.entry-points."xnft.plugins"]
+example = "xnft_example.plugin"
