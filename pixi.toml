@@ -28,7 +28,7 @@ setuptools_scm = ">=9.2.2,<10"
 
 
 [package.run-dependencies]
-xnft = { path = "../xnft" }
+# xnft = { path = "../xnft" }
 
 [tasks]
 
