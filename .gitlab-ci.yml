@@ -18,6 +18,30 @@ variables:
   # FF_USE_FASTZIP: "true"
   # CACHE_COMPRESSION_LEVEL: "fastest"
 
+# Store our package cache in our git repo so we can cache it
+.pixi-cache: &pixi-cache
+  key:
+    files:
+      - pixi.lock
+  paths:
+    - .pixi-cache/ # installed pixi environments
+  policy: pull
+
+prepare-pixi-cache:
+  image: ghcr.io/prefix-dev/pixi:latest
+  stage: pixi-cache
+
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+
+  cache:
+    <<: *pixi-cache
+    policy: pull-push
+
+  script:
+    - pixi install -e test
+    - pixi install -e build
+
 # Run code quality test
 code-quality:
   image: ghcr.io/prefix-dev/pixi:latest
