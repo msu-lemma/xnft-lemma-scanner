@@ -11,7 +11,7 @@ readme = "README.md"
 description = "Antenna measurement and analysis software."
 license = "LicenseRef-Proprietary"
 
-requires-python = ">=3.13,<3.15"
+requires-python = ">=3.12,<3.15"
 
 [project.scripts]
 xnft = "xnft.gui.app:main"

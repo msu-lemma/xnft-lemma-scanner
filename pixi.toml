@@ -3,11 +3,15 @@ channels = ["https://prefix.dev/conda-forge"]
 platforms = [
     { platform = "osx-arm64", macos = "15.0" },
     { platform = "osx-64", macos = "15.0" },
-    { platform = "linux-64", glibc = "2.35" },
-    { platform = "linux-aarch64", glibc = "2.35" },
+    { platform = "linux-64" },                  # glibc = "2.35" },
+    { platform = "linux-aarch64" },             # glibc = "2.35" },
     { platform = "win-64" },
 ]
 preview = ["pixi-build"]
+exclude-newer = "14d" # Wait two weeks before using new packages
+
+[workspace.dependencies]
+python = ">=3.12,<3.15"
 
 [package]
 name = "xnft-lemma-scanner"
@@ -23,9 +27,9 @@ channels = ["https://prefix.dev/conda-forge"]
 git = ">=2.53.0,<3"
 
 [package.host-dependencies]
-setuptools = ">=82.0.0,<83"
-setuptools_scm = ">=9.2.2,<10"
-
+python = { workspace = true }
+hatchling = ">=1.32.4,<2"
+hatch-vcs = ">=0.5.0,<0.6"
 
 [package.run-dependencies]
 # xnft = { path = "../xnft" }
