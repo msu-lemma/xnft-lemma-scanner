@@ -1,4 +1,5 @@
 stages:
+  - pixi-cache
   - build-test
   - package
   - release
