@@ -10,7 +10,7 @@ platforms = [
 preview = ["pixi-build"]
 
 [package]
-name = "xnft-example"
+name = "xnft-lemma-scanner"
 version = "0.0.0.dev0"
 
 [package.build.backend]
@@ -33,4 +33,4 @@ xnft = { path = "../xnft" }
 [tasks]
 
 [dependencies]
-xnft-example = { path = "." }
+xnft-lemma-scanner = { path = "." }

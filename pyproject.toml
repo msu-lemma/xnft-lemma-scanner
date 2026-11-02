@@ -1,5 +1,5 @@
 [project]
-name = "xnft-example"
+name = "xnft-lemma-scanner"
 dynamic = ["version"]
 authors = [
   { name = "LEmmA Group, Michigan State University" },
@@ -56,4 +56,4 @@ extend-exclude = [".pixi-cache"]
 
 # === xNFT Plugin Configuration ===
 [project.entry-points."xnft.plugins"]
-example = "xnft_example.plugin"
+example = "xnft_lemma_scanner.plugin"

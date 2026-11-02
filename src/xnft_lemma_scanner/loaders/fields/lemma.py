@@ -1,7 +1,7 @@
 """
-File for example near field scanner file format.
+File for LEmmA near field scanner file format.
 
-Copyright 2026 LEmmA, Electromagnetics Research Group, Michigan State University.
+Copyright 2025-2026 LEmmA, Electromagnetics Research Group, Michigan State University.
 """
 
 import logging
@@ -13,12 +13,11 @@ from xnft.common.enums import (
     CoordinateSystemType,
     DataPolarizationType,
     FieldType,
-    PolarizationType,
     ScanType,
     SParameterType,
 )
 from xnft.common.registry import registry
-from xnft.common.types import FieldDataset, FileInfo
+from xnft.common.types import FieldDataset, FileInfo, PolarizationType
 
 logger = logging.getLogger(__name__)
 
@@ -26,25 +25,26 @@ logger = logging.getLogger(__name__)
 # Constant for scanner distnaces
 POINTS_PER_METER = 200_000
 
-
-# === REGISTER LOADERS ===========================================================
-
 # Register DataSource
-EXAMPLE_SOURCE = registry.data_sources.register(
-    id="xnft-example.example",
-    display_name="Example Scanner",
+LEMMA_SOURCE_V1 = registry.data_sources.register(
+    id="xnft.lemma_v1",
+    display_name="LEmmA Scanner V1",
+)
+LEMMA_SOURCE_V2 = registry.data_sources.register(
+    id="xnft.lemma_v2",
+    display_name="LEmmA Scanner V2",
 )
 
 
 @registry.loaders.fields.register(
-    source=EXAMPLE_SOURCE,
+    source=LEMMA_SOURCE_V1,
     field_type=FieldType.NEAR,
     scan_type=ScanType.PLANAR,
     data_polarization=DataPolarizationType.SINGLE_POL,
     extension=".h5",
     has_sp=True,
 )
-def load_example_h5(file_list: list[FileInfo]) -> xr.Dataset:
+def load_lemma_v1_h5(file_list: list[FileInfo]) -> xr.Dataset:
 
     co_file_info = cx_file_info = None
     for file_info in file_list:
@@ -55,7 +55,7 @@ def load_example_h5(file_list: list[FileInfo]) -> xr.Dataset:
         else:
             raise TypeError(
                 "LEmmA loader only accepts polarization types CO_POL and CROSS_POL, not both "
-                "or none"
+                "or none",
             )
 
     if co_file_info is None and cx_file_info is None:
@@ -66,9 +66,9 @@ def load_example_h5(file_list: list[FileInfo]) -> xr.Dataset:
         with h5py.File(file_info.path, "r") as dataset:
             sample_frequencies = dataset["f"][()][0]
             sample_locations = dataset["points"][()] / POINTS_PER_METER
-            x_locs = sample_locations[:, 0]
+            x_locs = sample_locations[:, 2]
             # NOTE: Swap y and z axes
-            y_locs = sample_locations[:, 2]
+            y_locs = sample_locations[:, 0]
 
             # TODO/FIXME: Hardcoded z-distance!!
             z_locs = sample_locations[:, 1] + 0.069
@@ -143,7 +143,101 @@ def load_example_h5(file_list: list[FileInfo]) -> xr.Dataset:
         frequency=sample_frequency_array,
         coordinate_system=CoordinateSystemType.CARTESIAN,
         field_type=FieldType.NEAR,
-        data_source=DataSourceType.LEMMA,
+        data_source=LEMMA_SOURCE_V1,
+    )
+
+    return fields
+
+
+@registry.loaders.fields.register(
+    source=LEMMA_SOURCE_V2,
+    field_type=FieldType.NEAR,
+    scan_type=ScanType.PLANAR,
+    data_polarization=DataPolarizationType.SINGLE_POL,
+    extension=".h5",
+    has_sp=True,
+)
+def load_lemma_v2_h5(file_list: list[FileInfo]) -> xr.Dataset:
+
+    # Open file
+    for file_info in file_list:
+        with h5py.File(file_info.path, "r") as dataset:
+            sample_frequencies = dataset["f"][()][0]
+            sample_locations = dataset["points"][()] / POINTS_PER_METER
+            x_locs = sample_locations[:, 0]
+            y_locs = sample_locations[:, 1]
+            # TODO/FIXME: temporary hardcoded z-distance; need scanner to report correct value
+            z_locs = sample_locations[:, 2] + 0.07
+
+            # NOTE: We're only taking the first item in the set
+            if file_info.s_parameters != set():
+                sp = next(iter(file_info.s_parameters))
+            else:
+                sp = SParameterType.S21
+
+            field_amplitude = dataset[f"{sp}real"][()] + 1.0j * dataset[f"{sp}imag"][()]
+
+            # TODO/FIXME: Assumes all measurements are co-pol ONLY
+            logger.warning(
+                "LEmmA V2 loader currently assumes _all_ measurements are co-pol only. Cross-pol measurements are treated as co-pol.",
+            )
+            ey_array = field_amplitude
+            ex_array = np.zeros_like(ey_array)
+
+    x_list = x_locs.tolist()
+    y_list = y_locs.tolist()
+    z_list = z_locs.tolist()
+
+    frequency_list = sample_frequencies.tolist()
+
+    ez_array = np.zeros_like(ey_array)
+
+    x_sample_location_array = np.sort(np.array(list(set(x_list))))
+    y_sample_location_array = np.sort(np.array(list(set(y_list))))
+    z_sample_location_array = np.sort(np.array(list(set(z_list))))
+
+    sample_frequency_array = np.sort(np.array(list(set(frequency_list))))
+
+    logger.debug(
+        "Sample location array shape: (x:%d, y:%d, z:%d, freq:%d)",
+        x_sample_location_array.size,
+        y_sample_location_array.size,
+        z_sample_location_array.size,
+        sample_frequency_array.size,
+    )
+
+    # Allocate new data array in multidimensional format
+    fields_shape = (
+        3,  # 3 for x,y,z component of the field
+        x_sample_location_array.size,
+        y_sample_location_array.size,
+        z_sample_location_array.size,
+        sample_frequency_array.size,
+    )
+    e_field = np.empty(fields_shape, dtype=np.complex128)
+
+    # Find to insert field values in e_field array
+    x_idx = np.searchsorted(x_sample_location_array, x_locs)
+    y_idx = np.searchsorted(y_sample_location_array, y_locs)
+    z_idx = np.searchsorted(z_sample_location_array, z_locs)
+
+    for f_idx in range(sample_frequencies.size):
+        e_field[0, x_idx, y_idx, z_idx, f_idx] = ex_array[:, f_idx]
+        e_field[1, x_idx, y_idx, z_idx, f_idx] = ey_array[:, f_idx]
+        e_field[2, x_idx, y_idx, z_idx, f_idx] = ez_array[:, f_idx]
+
+    fields = FieldDataset.create(
+        e_field=e_field,
+        h_field=None,
+        spatial_coords={
+            "x": x_sample_location_array,
+            "y": y_sample_location_array,
+            "z": z_sample_location_array,
+        },
+        frequency=sample_frequency_array,
+        coordinate_system=CoordinateSystemType.CARTESIAN,
+        field_type=FieldType.NEAR,
+        data_source=LEMMA_SOURCE_V2,
     )
 
     return fields
