@@ -36,6 +36,7 @@ hatch-vcs = ">=0.5.0,<0.6"
 
 [environments]
 build = ["build"]
+test = ["test"]
 
 [tasks]
 
@@ -52,3 +53,12 @@ glab = ">=1.123.0,<2"
 hatchling = ">=1.32.4,<2"
 hatch-vcs = ">=0.5.0,<0.6"
 twine = ">=7.0.0,<8"
+
+
+[feature.test.dependencies]
+# pytest = ">=9.1.1,<10"
+# pytest-cov = ">=7.1.0,<8"
+# pytest-xdist = ">=3.8.0,<4"
+# types-pyyaml = ">=6.0.12.20260906,<7"
+ruff = ">=0.17.0,<0.18"
+# pytest-qt = ">=4.5.0,<5"

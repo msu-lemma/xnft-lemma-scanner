@@ -1,0 +1,249 @@
+stages:
+  - build-test
+  - package
+  - release
+
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+    on_job_failure: all
+
+default:
+  interruptible: true
+
+variables:
+  DEBIAN_FRONTEND: "noninteractive"
+  PIXI_CACHE_DIR: "$CI_PROJECT_DIR/.pixi-cache"
+  QT_QPA_PLATFORM: "offscreen" # Allow rendering on headless platforms
+  # FF_USE_FASTZIP: "true"
+  # CACHE_COMPRESSION_LEVEL: "fastest"
+
+# Run code quality test
+code-quality:
+  image: ghcr.io/prefix-dev/pixi:latest
+  stage: build-test
+  cache:
+    <<: *pixi-cache
+  rules:
+    - changes:
+        - src/**/*
+        - pixi.toml
+        - pixi.lock
+    - when: never
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+  script:
+    - pixi run -e test ruff check --output-format=gitlab --output-file=$CI_PROJECT_DIR/code-quality-report.json
+  artifacts:
+    when: always
+    reports:
+      codequality: $CI_PROJECT_DIR/code-quality-report.json
+
+# Generate packaged applications
+package:
+  image: ghcr.io/prefix-dev/pixi:latest
+  stage: package
+
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: "0"
+
+  cache:
+    <<: *pixi-cache
+
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+    - git fetch --force --tags
+    - git describe --tags --always --dirty
+
+  script:
+    # If a git tag is set, update the package version to match the tag.
+    - |
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        PACKAGE_VERSION="${CI_COMMIT_TAG#v}"
+
+        echo "Setting package version to ${PACKAGE_VERSION}"
+
+        sed -i \
+          "/^\[package\]$/,/^\[/ s/^version = \".*\"/version = \"${PACKAGE_VERSION}\"/" \
+          pixi.toml
+
+        grep -A 5 '^\[package\]$' pixi.toml
+      fi
+    - pixi run --frozen -e build build-wheel
+    - pixi publish --target-dir=dist
+
+    # Rename conda file for stable artifact url
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        CONDA_FILE="$(find dist -maxdepth 1 -type f -name '*.conda' -print -quit)"
+        cp "$CONDA_FILE" dist/xnft-dev-main.conda
+      fi
+
+    # Get file names for release stages
+    - echo "CONDA_FILE=$(find dist -maxdepth 1 -type f -name '*.conda' ! -name 'xnft-dev-main.conda' -printf '%f\n' -quit)" >> package.env
+    - echo "WHEEL_FILE=$(find dist -maxdepth 1 -type f -name '*.whl' -printf '%f\n')" >> package.env
+    - echo "SDIST_FILE=$(find dist -maxdepth 1 -type f -name '*.tar.gz' -printf '%f\n')" >> package.env
+
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - "dist/*.conda"
+      - "dist/*.whl"
+      - "dist/*.tar.gz"
+    reports:
+      dotenv: package.env
+
+# Publish the latest build wheel
+publish-wheel:
+  interruptible: false
+  stage: release
+  image: ghcr.io/prefix-dev/pixi:latest
+
+  variables:
+    TWINE_USERNAME: "gitlab-ci-token"
+    TWINE_PASSWORD: "$CI_JOB_TOKEN"
+
+  needs:
+    - job: test
+      optional: true
+    - job: package
+      artifacts: true
+
+  rules:
+    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
+
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+
+  script:
+    - pixi run -e build python -m twine upload
+      --non-interactive
+      --repository-url
+      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi"
+      dist/*.whl
+      dist/*.tar.gz
+
+# Publish the latest conda package
+publish-conda:
+  interruptible: false
+  stage: release
+  image: alpine:3.22
+
+  needs:
+    - job: test
+      optional: true
+    - job: package
+      artifacts: true
+
+  rules:
+    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+
+  before_script:
+    - apk add --no-cache curl
+
+  script:
+    - |
+      set -eu
+
+      CONDA_FILE="$(find dist -maxdepth 1 -type f -name '*.conda' ! -name 'xnft-dev-main.conda' -print -quit)"
+      test -n "${CONDA_FILE}"
+
+      FILE_NAME="$(basename "${CONDA_FILE}")"
+      PACKAGE_VERSION="${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}"
+
+      echo "Uploading ${FILE_NAME}"
+
+      curl --fail-with-body \
+        --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file "${CONDA_FILE}" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${CI_PROJECT_NAME}-dev-conda/${PACKAGE_VERSION}/${FILE_NAME}"
+
+## Upload wheel/conda packages to registry
+publish-release:
+  interruptible: false
+  stage: release
+  image: alpine:3.22
+
+  needs:
+    - job: test
+      optional: true
+    - job: package
+      artifacts: true
+
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
+
+  before_script:
+    - apk add --no-cache curl
+
+  script:
+    - |
+      set -eu
+
+      for PACKAGE_FILE in dist/*.conda dist/*.whl dist/*.tar.gz; do
+        if [ ! -f "${PACKAGE_FILE}" ]; then
+          continue
+        fi
+
+        FILE_NAME="$(basename "${PACKAGE_FILE}")"
+
+        if [ "${FILE_NAME}" = "xnft-dev-main.conda" ]; then
+          continue
+        fi
+
+        echo "Uploading ${FILE_NAME}"
+
+        curl --fail-with-body \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "${PACKAGE_FILE}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${CI_PROJECT_NAME}/${CI_COMMIT_TAG}/${FILE_NAME}"
+      done
+
+# Create release for tagged versions
+release:
+  interruptible: false
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+
+  variables:
+    GLAB_ENABLE_CI_AUTOLOGIN: "true"
+
+  needs:
+    - job: test
+      optional: true
+    - job: package
+      artifacts: true
+    - job: publish-release
+
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
+
+  before_script: []
+
+  script:
+    - echo "Creating release for ${CI_COMMIT_TAG}..."
+
+  release:
+    name: "Release $CI_COMMIT_TAG"
+    description: "Release created by pipeline $CI_PIPELINE_URL."
+    tag_name: "$CI_COMMIT_TAG"
+    ref: "$CI_COMMIT_SHA"
+
+    assets:
+      links:
+        - name: "$CONDA_FILE"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/$CI_PROJECT_NAME/$CI_COMMIT_TAG/$CONDA_FILE"
+          filepath: "/packages/$CONDA_FILE"
+          link_type: "package"
+
+        - name: "$WHEEL_FILE"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/$CI_PROJECT_NAME/$CI_COMMIT_TAG/$WHEEL_FILE"
+          filepath: "/packages/$WHEEL_FILE"
+          link_type: "package"
+
+        - name: "$SDIST_FILE"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/$CI_PROJECT_NAME/$CI_COMMIT_TAG/$SDIST_FILE"
+          filepath: "/packages/$SDIST_FILE"
+          link_type: "package"
