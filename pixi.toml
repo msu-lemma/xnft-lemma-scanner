@@ -34,7 +34,21 @@ hatch-vcs = ">=0.5.0,<0.6"
 [package.run-dependencies]
 # xnft = { path = "../xnft" }
 
+[environments]
+build = ["build"]
+
 [tasks]
+
+[feature.build.tasks.build-wheel]
+cmd = ["uv", "build"]
 
 [dependencies]
 xnft-lemma-scanner = { path = "." }
+
+
+[feature.build.dependencies]
+uv = ">=0.13.1,<0.14"
+glab = ">=1.123.0,<2"
+hatchling = ">=1.32.4,<2"
+hatch-vcs = ">=0.5.0,<0.6"
+twine = ">=7.0.0,<8"
