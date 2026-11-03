@@ -73,7 +73,7 @@ test:
 
   variables:
     GIT_SUBMODULE_STRATEGY: normal
-    GIT_SUBMODULE_PATHS: "data"
+    # GIT_SUBMODULE_PATHS: "data"
     GIT_SUBMODULE_DEPTH: "1"
     GIT_SUBMODULE_FORCE_HTTPS: "true"
     GIT_LFS_SKIP_SMUDGE: "1"
