@@ -3,15 +3,15 @@ stages:
   - build-test
   - package
   - release
-  - release-pypi
+  - promote-pypi
 
 workflow:
   auto_cancel:
     on_new_commit: interruptible
     on_job_failure: all
 
-  # PyPI tags are added to trigger a PyPI upload job on GitHub
-  # Don't run on pypi release trigger tags.
+  # PyPI tags are added to trigger a PyPI upload job on GitHub.
+  # Do not start another GitLab pipeline for these promotion tags.
   rules:
     - if: "$CI_COMMIT_TAG =~ /^pypi-v/"
       when: never
@@ -23,7 +23,8 @@ default:
 variables:
   DEBIAN_FRONTEND: "noninteractive"
   PIXI_CACHE_DIR: "$CI_PROJECT_DIR/.pixi-cache"
-  QT_QPA_PLATFORM: "offscreen" # Allow rendering on headless platforms
+  QT_QPA_PLATFORM: "offscreen"
+
   # FF_USE_FASTZIP: "true"
   # CACHE_COMPRESSION_LEVEL: "fastest"
 
@@ -39,13 +40,23 @@ variables:
         - pixi.lock
     - when: never
 
-# Store our package cache in our git repo so we can cache it
+.package-rules:
+  rules: &package-rules
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
+    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+    - when: never
+
+.release-rules:
+  rules: &release-rules
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
+    - when: never
+
 .pixi-cache: &pixi-cache
   key:
     files:
       - pixi.lock
   paths:
-    - .pixi-cache/ # installed pixi environments
+    - .pixi-cache/
   policy: pull
 
 prepare-pixi-cache:
@@ -53,7 +64,8 @@ prepare-pixi-cache:
   stage: pixi-cache
 
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+    - apt-get update
+    - apt-get install -y --no-install-recommends git git-lfs
 
   cache:
     <<: *pixi-cache
@@ -90,14 +102,16 @@ test:
     <<: *pixi-cache
 
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+    - apt-get update
+    - apt-get install -y --no-install-recommends git git-lfs
     - git -C data lfs pull
 
   script:
-    - pixi run -e "$PIXI_ENVIRONMENT" python --version
-    # - pixi run -e "$PIXI_ENVIRONMENT" pytest -s -n 16 -vv -rA
+    - pixi run -e "${PIXI_ENVIRONMENT}" python --version
+    # - pixi run -e "${PIXI_ENVIRONMENT}" pytest -s -n 16 -vv -rA
 
   coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+
   artifacts:
     when: always
     reports:
@@ -106,36 +120,43 @@ test:
         coverage_format: cobertura
         path: coverage.xml
 
-# Run code quality test
 code-quality:
   image: ghcr.io/prefix-dev/pixi:latest
   stage: build-test
-  cache:
-    <<: *pixi-cache
 
   rules: *test-rules
 
+  cache:
+    <<: *pixi-cache
+
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+    - apt-get update
+    - apt-get install -y --no-install-recommends git git-lfs
+
   script:
-    - pixi run -e test ruff check --output-format=gitlab --output-file=$CI_PROJECT_DIR/code-quality-report.json
+    - >
+      pixi run -e test ruff check
+      --output-format=gitlab
+      --output-file="${CI_PROJECT_DIR}/code-quality-report.json"
+
   artifacts:
     when: always
     reports:
-      codequality: $CI_PROJECT_DIR/code-quality-report.json
+      codequality: "${CI_PROJECT_DIR}/code-quality-report.json"
 
-# Builds the sphinx documentation for the project
 # docs-build:
 #   image: ghcr.io/prefix-dev/pixi:latest
 #   stage: build-test
+#
+#   rules: *test-rules
+#
 #   cache:
 #     <<: *pixi-cache
-
-#   rules: *test-rules
-
+#
 #   before_script:
 #     - >
-#       apt-get update && apt-get install -y --no-install-recommends
+#       apt-get update &&
+#       apt-get install -y --no-install-recommends
 #       xindy
 #       texlive-xetex
 #       texlive-fonts-recommended
@@ -145,18 +166,21 @@ code-quality:
 #       git
 #       git-lfs
 #     - rm -rf /var/lib/apt/lists/*
+#
 #   script:
 #     - pixi run -e docs build-docs
 #     - tar -czf docs/api/build/xnft-docs.tar.gz docs/api/build/html
+#
 #   artifacts:
 #     paths:
 #       - docs/api/build/*.pdf
 #       - docs/api/build/xnft-docs.tar.gz
 
-# Generate packaged applications
-package:
+package-python:
   image: ghcr.io/prefix-dev/pixi:latest
   stage: package
+
+  rules: *package-rules
 
   variables:
     GIT_STRATEGY: clone
@@ -166,52 +190,186 @@ package:
     <<: *pixi-cache
 
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+    - apt-get update
+    - apt-get install -y --no-install-recommends git git-lfs
     - git fetch --force --tags
     - git describe --tags --always --dirty
 
   script:
-    # If a git tag is set, update the package version to match the tag.
     - |
+      set -eu
+
       if [ -n "${CI_COMMIT_TAG:-}" ]; then
         PACKAGE_VERSION="${CI_COMMIT_TAG#v}"
 
-        echo "Setting package version to ${PACKAGE_VERSION}"
+        echo "Building Python release version ${PACKAGE_VERSION}"
 
-        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XNFT="${PACKAGE_VERSION}"
-
-        sed -i \
-          "/^\[package\]$/,/^\[/ s/^version = \".*\"/version = \"${PACKAGE_VERSION}\"/" \
-          pixi.toml
-
-        grep -A 5 '^\[package\]$' pixi.toml
+        # The normalized distribution name for xnft-lemma-scanner is
+        # XNFT_LEMMA_SCANNER.
+        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XNFT_LEMMA_SCANNER="${PACKAGE_VERSION}"
+      else
+        echo "Building Python development version from VCS metadata"
       fi
-    - pixi run --frozen -e build build-dist
-    - pixi publish --target-dir=dist
 
-    # Rename conda file for stable artifact url
+      pixi run --frozen -e build build-dist
+
+      WHEEL_FILE="$(
+        find dist \
+          -maxdepth 1 \
+          -type f \
+          -name '*.whl' \
+          -printf '%f\n' \
+          -quit
+      )"
+
+      SDIST_FILE="$(
+        find dist \
+          -maxdepth 1 \
+          -type f \
+          -name '*.tar.gz' \
+          -printf '%f\n' \
+          -quit
+      )"
+
+      if [ -z "${WHEEL_FILE}" ]; then
+        echo "ERROR: No wheel was created." >&2
+        exit 1
+      fi
+
+      if [ -z "${SDIST_FILE}" ]; then
+        echo "ERROR: No source distribution was created." >&2
+        exit 1
+      fi
+
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        case "${WHEEL_FILE}" in
+          *-"${PACKAGE_VERSION}"-*)
+            ;;
+          *)
+            echo "ERROR: Wheel does not use version ${PACKAGE_VERSION}." >&2
+            echo "Wheel: ${WHEEL_FILE}" >&2
+            exit 1
+            ;;
+        esac
+
+        case "${SDIST_FILE}" in
+          *-"${PACKAGE_VERSION}".tar.gz)
+            ;;
+          *)
+            echo "ERROR: Source distribution does not use version ${PACKAGE_VERSION}." >&2
+            echo "Source distribution: ${SDIST_FILE}" >&2
+            exit 1
+            ;;
+        esac
+      fi
+
+      printf 'WHEEL_FILE=%s\n' "${WHEEL_FILE}" > python-package.env
+      printf 'SDIST_FILE=%s\n' "${SDIST_FILE}" >> python-package.env
+
+      echo "Created ${WHEEL_FILE}"
+      echo "Created ${SDIST_FILE}"
+
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - "dist/*.whl"
+      - "dist/*.tar.gz"
+    reports:
+      dotenv: python-package.env
+
+package-conda:
+  image: ghcr.io/prefix-dev/pixi:latest
+  stage: package
+
+  rules: *package-rules
+
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: "0"
+
+  cache:
+    <<: *pixi-cache
+
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends git git-lfs
+    - git fetch --force --tags
+    - git describe --tags --always --dirty
+
+  script:
     - |
-      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
-        CONDA_FILE="$(find dist -maxdepth 1 -type f -name '*.conda' -print -quit)"
-        cp "$CONDA_FILE" dist/xnft-dev-main.conda
+      set -eu
+
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        PACKAGE_VERSION="${CI_COMMIT_TAG#v}"
+
+        echo "Building Conda release version ${PACKAGE_VERSION}"
+      else
+        PACKAGE_VERSION="$(
+          pixi run -e build python -c \
+            'from setuptools_scm import get_version; print(get_version())'
+        )"
+
+        echo "Building Conda development version ${PACKAGE_VERSION}"
       fi
 
-    # Get file names for release stages
-    - echo "CONDA_FILE=$(find dist -maxdepth 1 -type f -name '*.conda' ! -name 'xnft-dev-main.conda' -printf '%f\n' -quit)" >> package.env
-    - echo "WHEEL_FILE=$(find dist -maxdepth 1 -type f -name '*.whl' -printf '%f\n')" >> package.env
-    - echo "SDIST_FILE=$(find dist -maxdepth 1 -type f -name '*.tar.gz' -printf '%f\n')" >> package.env
+      if [ -z "${PACKAGE_VERSION}" ]; then
+        echo "ERROR: The package version is empty." >&2
+        exit 1
+      fi
+
+      sed -i \
+        "/^\[package\]$/,/^\[/ s/^version = \".*\"/version = \"${PACKAGE_VERSION}\"/" \
+        pixi.toml
+
+      if ! grep -q "^version = \"${PACKAGE_VERSION}\"$" pixi.toml; then
+        echo "ERROR: Failed to set pixi.toml version to ${PACKAGE_VERSION}." >&2
+        exit 1
+      fi
+
+      # Ensure that any Python distribution built internally by the Pixi
+      # backend uses the same version.
+      export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XNFT_LEMMA_SCANNER="${PACKAGE_VERSION}"
+
+      pixi publish --target-dir=dist
+
+      CONDA_FILE="$(
+        find dist \
+          -maxdepth 1 \
+          -type f \
+          -name '*.conda' \
+          -printf '%f\n' \
+          -quit
+      )"
+
+      if [ -z "${CONDA_FILE}" ]; then
+        echo "ERROR: No Conda package was created." >&2
+        exit 1
+      fi
+
+      case "${CONDA_FILE}" in
+        *-"${PACKAGE_VERSION}"-*)
+          ;;
+        *)
+          echo "ERROR: Conda package does not use version ${PACKAGE_VERSION}." >&2
+          echo "Conda package: ${CONDA_FILE}" >&2
+          exit 1
+          ;;
+      esac
+
+      printf 'CONDA_FILE=%s\n' "${CONDA_FILE}" > conda-package.env
+      printf 'PACKAGE_VERSION=%s\n' "${PACKAGE_VERSION}" >> conda-package.env
+
+      echo "Created ${CONDA_FILE}"
 
   artifacts:
     expire_in: 30 days
     paths:
       - "dist/*.conda"
-      - "dist/*.whl"
-      - "dist/*.tar.gz"
     reports:
-      dotenv: package.env
+      dotenv: conda-package.env
 
-# Publish the latest build wheel
-publish-wheel:
+publish-pypi:
   interruptible: false
   stage: release
   image: ghcr.io/prefix-dev/pixi:latest
@@ -222,27 +380,34 @@ publish-wheel:
 
   needs:
     - job: test
-    - job: package
+    - job: package-python
       artifacts: true
 
-  rules:
-    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
-    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
-
-  before_script:
-    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+  rules: *package-rules
 
   script:
-    - pixi run -e build python -m twine upload
-      --non-interactive
-      --verbose
-      --repository-url
-      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi"
-      dist/*.whl
-      dist/*.tar.gz
+    - |
+      set -eu
 
-# Publish the latest conda package
-publish-conda:
+      test -n "${WHEEL_FILE}"
+      test -n "${SDIST_FILE}"
+      test -r "dist/${WHEEL_FILE}"
+      test -r "dist/${SDIST_FILE}"
+
+      pixi run -e build python -m twine check \
+        "dist/${WHEEL_FILE}" \
+        "dist/${SDIST_FILE}"
+
+      pixi run -e build python -m twine upload \
+        --verbose \
+        --skip-existing \
+        --non-interactive \
+        --repository-url \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi" \
+        "dist/${WHEEL_FILE}" \
+        "dist/${SDIST_FILE}"
+
+publish-conda-dev:
   interruptible: false
   stage: release
   image: alpine:3.22
@@ -250,11 +415,12 @@ publish-conda:
   needs:
     - job: test
       optional: true
-    - job: package
+    - job: package-conda
       artifacts: true
 
   rules:
     - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+    - when: never
 
   before_script:
     - apk add --no-cache curl
@@ -263,20 +429,20 @@ publish-conda:
     - |
       set -eu
 
-      CONDA_FILE="$(find dist -maxdepth 1 -type f -name '*.conda' ! -name 'xnft-dev-main.conda' -print -quit)"
       test -n "${CONDA_FILE}"
+      test -r "dist/${CONDA_FILE}"
 
-      FILE_NAME="$(basename "${CONDA_FILE}")"
-      PACKAGE_VERSION="${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}"
+      REGISTRY_VERSION="${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}"
 
-      echo "Uploading ${FILE_NAME}"
+      echo "Uploading ${CONDA_FILE}"
+      echo "Package version: ${PACKAGE_VERSION}"
+      echo "Registry version: ${REGISTRY_VERSION}"
 
       curl --fail-with-body \
         --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-        --upload-file "${CONDA_FILE}" \
-        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${CI_PROJECT_NAME}-dev-conda/${PACKAGE_VERSION}/${FILE_NAME}"
+        --upload-file "dist/${CONDA_FILE}" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${CI_PROJECT_NAME}-dev-conda/${REGISTRY_VERSION}/${CONDA_FILE}"
 
-## Upload wheel/conda packages to registry
 publish-release-packages:
   interruptible: false
   stage: release
@@ -284,11 +450,12 @@ publish-release-packages:
 
   needs:
     - job: test
-    - job: package
+    - job: package-python
+      artifacts: true
+    - job: package-conda
       artifacts: true
 
-  rules:
-    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
+  rules: *release-rules
 
   before_script:
     - apk add --no-cache curl
@@ -297,26 +464,29 @@ publish-release-packages:
     - |
       set -eu
 
-      for PACKAGE_FILE in dist/*.conda dist/*.whl dist/*.tar.gz; do
-        if [ ! -f "${PACKAGE_FILE}" ]; then
-          continue
+      for FILE_NAME in \
+        "${CONDA_FILE}" \
+        "${WHEEL_FILE}" \
+        "${SDIST_FILE}"
+      do
+        if [ -z "${FILE_NAME}" ]; then
+          echo "ERROR: A package filename is empty." >&2
+          exit 1
         fi
 
-        FILE_NAME="$(basename "${PACKAGE_FILE}")"
-
-        if [ "${FILE_NAME}" = "xnft-dev-main.conda" ]; then
-          continue
+        if [ ! -r "dist/${FILE_NAME}" ]; then
+          echo "ERROR: Cannot read dist/${FILE_NAME}." >&2
+          exit 1
         fi
 
         echo "Uploading ${FILE_NAME}"
 
         curl --fail-with-body \
           --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-          --upload-file "${PACKAGE_FILE}" \
+          --upload-file "dist/${FILE_NAME}" \
           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${CI_PROJECT_NAME}/${CI_COMMIT_TAG}/${FILE_NAME}"
       done
 
-# Create release for tagged versions
 release:
   interruptible: false
   stage: release
@@ -325,12 +495,18 @@ release:
   needs:
     - job: test
     - job: code-quality
-    - job: package
+
+    - job: package-python
       artifacts: true
+
+    - job: package-conda
+      artifacts: true
+
+    - job: publish-pypi
+
     - job: publish-release-packages
 
-  rules:
-    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
+  rules: *release-rules
 
   before_script:
     - apk add --no-cache curl
@@ -340,6 +516,7 @@ release:
       set -eu
 
       RELEASE_API="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
+      RELEASE_LINKS_API="${RELEASE_API}/${CI_COMMIT_TAG}/assets/links"
       PACKAGE_BASE_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${CI_PROJECT_NAME}/${CI_COMMIT_TAG}"
 
       echo "Creating release for ${CI_COMMIT_TAG}..."
@@ -353,9 +530,14 @@ release:
         --data-urlencode "ref=${CI_COMMIT_SHA}" \
         "${RELEASE_API}"
 
-      for FILE_NAME in "${CONDA_FILE:-}" "${WHEEL_FILE:-}" "${SDIST_FILE:-}"; do
+      for FILE_NAME in \
+        "${CONDA_FILE}" \
+        "${WHEEL_FILE}" \
+        "${SDIST_FILE}"
+      do
         if [ -z "${FILE_NAME}" ]; then
-          continue
+          echo "ERROR: A release package filename is empty." >&2
+          exit 1
         fi
 
         echo "Adding release link for ${FILE_NAME}..."
@@ -366,18 +548,19 @@ release:
           --data-urlencode "name=${FILE_NAME}" \
           --data-urlencode "url=${PACKAGE_BASE_URL}/${FILE_NAME}" \
           --data-urlencode "link_type=package" \
-          "${RELEASE_API}/${CI_COMMIT_TAG}/assets/links"
+          "${RELEASE_LINKS_API}"
       done
 
+# Create the PyPI promotion tag after a successful release
 release-to-pypi:
-  stage: release-pypi
+  stage: promote-pypi
   image: alpine:3.22
   interruptible: false
 
-  rules:
-    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
-      when: on_success
-    - when: never
+  needs:
+    - job: release
+
+  rules: *release-rules
 
   before_script:
     - apk add --no-cache git
@@ -393,6 +576,19 @@ release-to-pypi:
 
       git config user.name "GitLab CI"
       git config user.email "gitlab-ci@${CI_SERVER_HOST}"
+
+      echo "Checking promotion tag ${PROMOTION_TAG}..."
+
+      if git ls-remote --exit-code --tags origin \
+        "refs/tags/${PROMOTION_TAG}" >/dev/null 2>&1
+      then
+        echo "Promotion tag ${PROMOTION_TAG} already exists remotely."
+        exit 0
+      fi
+
+      # A tag can exist in the runner checkout even when it is not present
+      # on the remote. Remove only the local copy before creating it.
+      git tag --delete "${PROMOTION_TAG}" 2>/dev/null || true
 
       git tag \
         --annotate \
