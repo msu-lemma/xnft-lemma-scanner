@@ -125,33 +125,33 @@ code-quality:
       codequality: $CI_PROJECT_DIR/code-quality-report.json
 
 # Builds the sphinx documentation for the project
-docs-build:
-  image: ghcr.io/prefix-dev/pixi:latest
-  stage: build-test
-  cache:
-    <<: *pixi-cache
+# docs-build:
+#   image: ghcr.io/prefix-dev/pixi:latest
+#   stage: build-test
+#   cache:
+#     <<: *pixi-cache
 
-  rules: *test-rules
+#   rules: *test-rules
 
-  before_script:
-    - >
-      apt-get update && apt-get install -y --no-install-recommends
-      xindy
-      texlive-xetex
-      texlive-fonts-recommended
-      texlive-fonts-extra
-      fonts-freefont-otf
-      fontconfig
-      git 
-      git-lfs
-    - rm -rf /var/lib/apt/lists/*
-  script:
-    - pixi run -e docs build-docs
-    - tar -czf docs/api/build/xnft-docs.tar.gz docs/api/build/html
-  artifacts:
-    paths:
-      - docs/api/build/*.pdf
-      - docs/api/build/xnft-docs.tar.gz
+#   before_script:
+#     - >
+#       apt-get update && apt-get install -y --no-install-recommends
+#       xindy
+#       texlive-xetex
+#       texlive-fonts-recommended
+#       texlive-fonts-extra
+#       fonts-freefont-otf
+#       fontconfig
+#       git
+#       git-lfs
+#     - rm -rf /var/lib/apt/lists/*
+#   script:
+#     - pixi run -e docs build-docs
+#     - tar -czf docs/api/build/xnft-docs.tar.gz docs/api/build/html
+#   artifacts:
+#     paths:
+#       - docs/api/build/*.pdf
+#       - docs/api/build/xnft-docs.tar.gz
 
 # Generate packaged applications
 package:
