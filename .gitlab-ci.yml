@@ -11,7 +11,7 @@ workflow:
     on_job_failure: all
 
   # PyPI tags are added to trigger a PyPI upload job on GitHub.
-  # Do not start another GitLab pipeline for these promotion tags.
+  # Do not start another GitLab pipeline for these promotion tags
   rules:
     - if: "$CI_COMMIT_TAG =~ /^pypi-v/"
       when: never
