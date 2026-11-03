@@ -400,7 +400,6 @@ publish-pypi:
 
       pixi run -e build python -m twine upload \
         --verbose \
-        --skip-existing \
         --non-interactive \
         --repository-url \
         "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi" \
