@@ -63,6 +63,9 @@ prepare-pixi-cache:
   image: ghcr.io/prefix-dev/pixi:latest
   stage: pixi-cache
 
+  variables:
+    GIT_DEPTH: "0"
+
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends git git-lfs
@@ -104,6 +107,7 @@ test:
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends git git-lfs
+    - git fetch --force --tags
     - git -C data lfs pull
 
   script:
@@ -124,6 +128,9 @@ code-quality:
   image: ghcr.io/prefix-dev/pixi:latest
   stage: build-test
 
+  variables:
+    GIT_DEPTH: "0"
+
   rules: *test-rules
 
   cache:
@@ -132,6 +139,7 @@ code-quality:
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends git git-lfs
+    - git fetch --force --tags
 
   script:
     - >
@@ -206,7 +214,7 @@ package-python:
 
         # The normalized distribution name for xnft-lemma-scanner is
         # XNFT_LEMMA_SCANNER.
-        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XNFT_LEMMA_SCANNER="${PACKAGE_VERSION}"
+        export SETUPTOOLS_SCM_PRETEND_VERSION="${PACKAGE_VERSION}"
       else
         echo "Building Python development version from VCS metadata"
       fi
@@ -307,7 +315,7 @@ package-conda:
       else
         PACKAGE_VERSION="$(
           pixi run -e build python -c \
-            'from setuptools_scm import get_version; print(get_version())'
+            'from setuptools_scm import get_version; print(get_version(tag_regex=r"^(?:pypi-)?v(?P<version>.*)$"))'
         )"
 
         echo "Building Conda development version ${PACKAGE_VERSION}"
@@ -329,7 +337,7 @@ package-conda:
 
       # Ensure that any Python distribution built internally by the Pixi
       # backend uses the same version.
-      export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XNFT_LEMMA_SCANNER="${PACKAGE_VERSION}"
+      export SETUPTOOLS_SCM_PRETEND_VERSION="${PACKAGE_VERSION}"
 
       pixi publish --target-dir=dist
 
