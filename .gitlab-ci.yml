@@ -411,7 +411,6 @@ release:
           --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
           --data-urlencode "name=${FILE_NAME}" \
           --data-urlencode "url=${PACKAGE_BASE_URL}/${FILE_NAME}" \
-          --data-urlencode "direct_asset_path=/packages/${FILE_NAME}" \
           --data-urlencode "link_type=package" \
           "${RELEASE_API}/${CI_COMMIT_TAG}/assets/links"
       done
