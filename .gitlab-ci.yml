@@ -3,11 +3,19 @@ stages:
   - build-test
   - package
   - release
+  - release-pypi
 
 workflow:
   auto_cancel:
     on_new_commit: interruptible
     on_job_failure: all
+
+  # PyPI tags are added to trigger a PyPI upload job on GitHub
+  # Don't run on pypi release trigger tags
+  rules:
+    - if: "$CI_COMMIT_TAG =~ /^pypi-v/"
+      when: never
+    - when: always
 
 default:
   interruptible: true
@@ -18,6 +26,18 @@ variables:
   QT_QPA_PLATFORM: "offscreen" # Allow rendering on headless platforms
   # FF_USE_FASTZIP: "true"
   # CACHE_COMPRESSION_LEVEL: "fastest"
+
+.test-rules:
+  rules: &test-rules
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
+    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+    - changes:
+        - src/**/*
+        - tests/**/*
+        - pyproject.toml
+        - pixi.toml
+        - pixi.lock
+    - when: never
 
 # Store our package cache in our git repo so we can cache it
 .pixi-cache: &pixi-cache
@@ -40,8 +60,51 @@ prepare-pixi-cache:
     policy: pull-push
 
   script:
-    - pixi install -e test
-    - pixi install -e build
+    - pixi install -e test-py312
+    - pixi install -e test-py313
+    - pixi install -e test-py314
+
+# Run test cases for all supported python versions
+test:
+  image: ghcr.io/prefix-dev/pixi:latest
+  stage: build-test
+
+  rules: *test-rules
+
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: "data"
+    GIT_SUBMODULE_DEPTH: "1"
+    GIT_SUBMODULE_FORCE_HTTPS: "true"
+    GIT_LFS_SKIP_SMUDGE: "1"
+    PYTHON_CPU_COUNT: "16" # limit resources on large CPU clusters
+
+  parallel:
+    matrix:
+      - PIXI_ENVIRONMENT:
+          - test-py312
+          - test-py313
+          - test-py314
+
+  cache:
+    <<: *pixi-cache
+
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git git-lfs
+    - git -C data lfs pull
+
+  script:
+    - pixi run -e "$PIXI_ENVIRONMENT" python --version
+    - pixi run -e "$PIXI_ENVIRONMENT" pytest -s -n 16 -vv -rA
+
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
 
 # Run code quality test
 code-quality:
@@ -49,12 +112,9 @@ code-quality:
   stage: build-test
   cache:
     <<: *pixi-cache
-  rules:
-    - changes:
-        - src/**/*
-        - pixi.toml
-        - pixi.lock
-    - when: never
+
+  rules: *test-rules
+
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git git-lfs
   script:
@@ -63,6 +123,35 @@ code-quality:
     when: always
     reports:
       codequality: $CI_PROJECT_DIR/code-quality-report.json
+
+# Builds the sphinx documentation for the project
+docs-build:
+  image: ghcr.io/prefix-dev/pixi:latest
+  stage: build-test
+  cache:
+    <<: *pixi-cache
+
+  rules: *test-rules
+
+  before_script:
+    - >
+      apt-get update && apt-get install -y --no-install-recommends
+      xindy
+      texlive-xetex
+      texlive-fonts-recommended
+      texlive-fonts-extra
+      fonts-freefont-otf
+      fontconfig
+      git 
+      git-lfs
+    - rm -rf /var/lib/apt/lists/*
+  script:
+    - pixi run -e docs build-docs
+    - tar -czf docs/api/build/xnft-docs.tar.gz docs/api/build/html
+  artifacts:
+    paths:
+      - docs/api/build/*.pdf
+      - docs/api/build/xnft-docs.tar.gz
 
 # Generate packaged applications
 package:
@@ -89,13 +178,15 @@ package:
 
         echo "Setting package version to ${PACKAGE_VERSION}"
 
+        export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XNFT="${PACKAGE_VERSION}"
+
         sed -i \
           "/^\[package\]$/,/^\[/ s/^version = \".*\"/version = \"${PACKAGE_VERSION}\"/" \
           pixi.toml
 
         grep -A 5 '^\[package\]$' pixi.toml
       fi
-    - pixi run --frozen -e build build-wheel
+    - pixi run --frozen -e build build-dist
     - pixi publish --target-dir=dist
 
     # Rename conda file for stable artifact url
@@ -131,7 +222,6 @@ publish-wheel:
 
   needs:
     - job: test
-      optional: true
     - job: package
       artifacts: true
 
@@ -186,14 +276,13 @@ publish-conda:
         "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${CI_PROJECT_NAME}-dev-conda/${PACKAGE_VERSION}/${FILE_NAME}"
 
 ## Upload wheel/conda packages to registry
-publish-release:
+publish-release-packages:
   interruptible: false
   stage: release
   image: alpine:3.22
 
   needs:
     - job: test
-      optional: true
     - job: package
       artifacts: true
 
@@ -237,10 +326,10 @@ release:
 
   needs:
     - job: test
-      optional: true
+    - job: code-quality
     - job: package
       artifacts: true
-    - job: publish-release
+    - job: publish-release-packages
 
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
@@ -272,3 +361,42 @@ release:
           url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/$CI_PROJECT_NAME/$CI_COMMIT_TAG/$SDIST_FILE"
           filepath: "/packages/$SDIST_FILE"
           link_type: "package"
+
+release-to-pypi:
+  stage: release-pypi
+  image: alpine:3.22
+  interruptible: false
+
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$/'
+      when: on_success
+    - when: never
+
+  before_script:
+    - apk add --no-cache git
+    - >
+      git remote set-url origin
+      "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+
+  script:
+    - |
+      set -eu
+
+      PROMOTION_TAG="pypi-${CI_COMMIT_TAG}"
+
+      git config user.name "GitLab CI"
+      git config user.email "gitlab-ci@${CI_SERVER_HOST}"
+
+      if git ls-remote --exit-code --tags origin \
+        "refs/tags/${PROMOTION_TAG}" >/dev/null 2>&1; then
+        echo "Promotion tag already exists: ${PROMOTION_TAG}" >&2
+        exit 1
+      fi
+
+      git tag \
+        --annotate \
+        --message "Promoted after successful pipeline ${CI_PIPELINE_ID}: ${CI_PIPELINE_URL}" \
+        "${PROMOTION_TAG}" \
+        "${CI_COMMIT_SHA}"
+
+      git push origin "refs/tags/${PROMOTION_TAG}"
