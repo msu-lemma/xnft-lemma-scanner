@@ -27,11 +27,11 @@ POINTS_PER_METER = 200_000
 
 # Register DataSource
 LEMMA_SOURCE_V1 = registry.data_sources.register(
-    id="xnft.lemma_v1",
+    id="xnft-lemma-scanner.lemma_v1",
     display_name="LEmmA Scanner V1",
 )
 LEMMA_SOURCE_V2 = registry.data_sources.register(
-    id="xnft.lemma_v2",
+    id="xnft-lemma-scanner.lemma_v2",
     display_name="LEmmA Scanner V2",
 )
 

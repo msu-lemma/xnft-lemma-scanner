@@ -69,10 +69,14 @@ hatch-vcs = ">=0.5.0,<0.6"
 twine = ">=7.0.0,<8"
 
 [feature.test.dependencies]
+xnft = { git = "https://www.gitlab.msu.edu/ece-lemma/public/xnft/xnft.git", rev = 'main' }
 ruff = ">=0.17.0,<0.18"
 pytest = ">=9.1.1,<10"
 pytest-xdist = ">=3.8.0,<4"
 pytest-cov = ">=7.1.0,<8"
+# h5py = ">=3.16.0,<4"
+# numpy = ">=2.5.4,<3"
+# xarray = ">=2026.9.0,<2027"
 
 [feature.py312.dependencies]
 python = "3.12.*"
