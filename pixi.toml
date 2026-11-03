@@ -47,6 +47,10 @@ test-py314 = ["test", "py314"]
 
 [tasks]
 
+[feature.test.tasks]
+
+test = "pytest -s"
+
 [feature.build.tasks.build-dist]
 cmd = ["uv", "build", "--sdist", "--wheel", "--no-sources"]
 
@@ -66,6 +70,9 @@ twine = ">=7.0.0,<8"
 
 [feature.test.dependencies]
 ruff = ">=0.17.0,<0.18"
+pytest = ">=9.1.1,<10"
+pytest-xdist = ">=3.8.0,<4"
+pytest-cov = ">=7.1.0,<8"
 
 [feature.py312.dependencies]
 python = "3.12.*"
