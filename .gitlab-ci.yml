@@ -383,7 +383,8 @@ publish-pypi:
     - job: package-python
       artifacts: true
 
-  rules: *package-rules
+  # Only run on releases to avoid uploading duplicate packages
+  rules: *release-rules
 
   script:
     - |
