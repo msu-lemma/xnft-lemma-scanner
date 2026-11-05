@@ -1,3 +1,4 @@
 [submodule "data"]
 	path = data
 	url = ../xnft-data.git
+	update = none
